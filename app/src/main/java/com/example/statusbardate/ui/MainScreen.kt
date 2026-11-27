@@ -323,7 +323,7 @@ fun MainScreen() {
 
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                 Text(
-                                    text = "Mẹo Android 13+: Nếu nút bật bị xám (Cài đặt bị hạn chế), hãy bấm nút bên dưới → chạm dấu 3 chấm (⋮) góc trên bên phải → chọn "Cho phép cài đặt bị hạn chế".",
+                                    text = "Mẹo Android 13+: Nếu nút bật bị xám (Cài đặt bị hạn chế), hãy bấm nút bên dưới → chạm dấu 3 chấm (⋮) góc trên bên phải → chọn «Cho phép cài đặt bị hạn chế».",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
