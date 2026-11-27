@@ -9,15 +9,16 @@ import kotlinx.coroutines.flow.update
 data class OverlayConfig(
     val isEnabled: Boolean = false,
     val formatOption: DateFormatOption = DateFormatOption.DD_MM,
-    val fontStyle: FontStyleOption = FontStyleOption.SYSTEM_MEDIUM,
-    val offsetX: Int = 165,
-    val offsetY: Int = 14,
-    val textSizeSp: Float = 13f,
+    val fontStyle: FontStyleOption = FontStyleOption.OPPO_SANS,
+    val fontWeight: Int = 550,
+    val offsetX: Int = PrefsManager.DEFAULT_OFFSET_X,
+    val offsetY: Int = PrefsManager.DEFAULT_OFFSET_Y,
+    val textSizeSp: Float = PrefsManager.DEFAULT_TEXT_SIZE_SP,
     val colorMode: TextColorMode = TextColorMode.AUTO,
     val autoDetectLightApps: Boolean = true,
     val lightAppPackages: Set<String> = PrefsManager.DEFAULT_LIGHT_APPS,
     val autoDodgeNotifications: Boolean = true,
-    val iconStepPx: Int = 56,
+    val iconStepPx: Int = PrefsManager.DEFAULT_ICON_STEP_PX,
     val maxDodgeIcons: Int = 4
 )
 
@@ -29,18 +30,33 @@ class PrefsManager(context: Context) {
 
     private fun loadConfig(): OverlayConfig {
         val savedPackages = prefs.getStringSet(KEY_LIGHT_APPS, null) ?: DEFAULT_LIGHT_APPS
+
+        // Tự động nâng cấp giá trị mặc định cũ (165px hay đè số cuối của đồng hồ, 56px hơi hẹp trên màn 1080p)
+        var loadedOffsetX = prefs.getInt(KEY_OFFSET_X, DEFAULT_OFFSET_X)
+        if (loadedOffsetX == 165) {
+            loadedOffsetX = DEFAULT_OFFSET_X
+            prefs.edit().putInt(KEY_OFFSET_X, loadedOffsetX).apply()
+        }
+
+        var loadedStepPx = prefs.getInt(KEY_ICON_STEP_PX, DEFAULT_ICON_STEP_PX)
+        if (loadedStepPx == 56) {
+            loadedStepPx = DEFAULT_ICON_STEP_PX
+            prefs.edit().putInt(KEY_ICON_STEP_PX, loadedStepPx).apply()
+        }
+
         return OverlayConfig(
             isEnabled = prefs.getBoolean(KEY_ENABLED, false),
             formatOption = DateFormatOption.fromName(prefs.getString(KEY_FORMAT, null)),
             fontStyle = FontStyleOption.fromName(prefs.getString(KEY_FONT_STYLE, null)),
-            offsetX = prefs.getInt(KEY_OFFSET_X, 165),
-            offsetY = prefs.getInt(KEY_OFFSET_Y, 14),
-            textSizeSp = prefs.getFloat(KEY_TEXT_SIZE, 13f),
+            fontWeight = prefs.getInt(KEY_FONT_WEIGHT, 550),
+            offsetX = loadedOffsetX,
+            offsetY = prefs.getInt(KEY_OFFSET_Y, DEFAULT_OFFSET_Y),
+            textSizeSp = prefs.getFloat(KEY_TEXT_SIZE, DEFAULT_TEXT_SIZE_SP),
             colorMode = TextColorMode.fromName(prefs.getString(KEY_COLOR_MODE, null)),
             autoDetectLightApps = prefs.getBoolean(KEY_AUTO_LIGHT_APPS, true),
             lightAppPackages = savedPackages.toSet(),
             autoDodgeNotifications = prefs.getBoolean(KEY_AUTO_DODGE_NOTIF, true),
-            iconStepPx = prefs.getInt(KEY_ICON_STEP_PX, 56),
+            iconStepPx = loadedStepPx,
             maxDodgeIcons = prefs.getInt(KEY_MAX_DODGE_ICONS, 4)
         )
     }
@@ -58,6 +74,12 @@ class PrefsManager(context: Context) {
     fun setFontStyle(style: FontStyleOption) {
         prefs.edit().putString(KEY_FONT_STYLE, style.name).apply()
         _config.update { it.copy(fontStyle = style) }
+    }
+
+    fun setFontWeight(weight: Int) {
+        val clamped = weight.coerceIn(300, 700)
+        prefs.edit().putInt(KEY_FONT_WEIGHT, clamped).apply()
+        _config.update { it.copy(fontWeight = clamped) }
     }
 
     fun setOffset(x: Int, y: Int) {
@@ -110,9 +132,15 @@ class PrefsManager(context: Context) {
     }
 
     companion object {
+        const val DEFAULT_OFFSET_X = 186
+        const val DEFAULT_OFFSET_Y = 13
+        const val DEFAULT_TEXT_SIZE_SP = 13.8f
+        const val DEFAULT_ICON_STEP_PX = 68
+
         private const val KEY_ENABLED = "enabled"
         private const val KEY_FORMAT = "format"
         private const val KEY_FONT_STYLE = "font_style"
+        private const val KEY_FONT_WEIGHT = "font_weight"
         private const val KEY_OFFSET_X = "offset_x"
         private const val KEY_OFFSET_Y = "offset_y"
         private const val KEY_TEXT_SIZE = "text_size"

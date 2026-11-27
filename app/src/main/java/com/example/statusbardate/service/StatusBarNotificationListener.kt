@@ -11,11 +11,15 @@ class StatusBarNotificationListener : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        activeInstance = this
         NotificationTracker.setConnected(true)
         recalculateVisibleIcons()
     }
 
     override fun onListenerDisconnected() {
+        if (activeInstance === this) {
+            activeInstance = null
+        }
         NotificationTracker.setConnected(false)
         super.onListenerDisconnected()
     }
@@ -32,7 +36,7 @@ class StatusBarNotificationListener : NotificationListenerService() {
         recalculateVisibleIcons()
     }
 
-    private fun recalculateVisibleIcons() {
+    fun recalculateVisibleIcons() {
         val active = try {
             activeNotifications ?: emptyArray()
         } catch (_: Exception) {
@@ -51,18 +55,18 @@ class StatusBarNotificationListener : NotificationListenerService() {
 
         for (sbn in active) {
             if (sbn == null) continue
-            // Bỏ qua thông báo nền của chính ứng dụng này (IMPORTANCE_MIN không hiện icon)
+            // Bỏ qua thông báo nền của chính ứng dụng này
             if (sbn.packageName == packageName) continue
 
             val notif = sbn.notification ?: continue
             if (notif.smallIcon == null) continue
 
-            // Bỏ qua các thông báo mức tối thiểu (IMPORTANCE_MIN) vì không hiển thị icon trên thanh trạng thái
+            // Bỏ qua thông báo mức tối thiểu (IMPORTANCE_MIN) vì không hiển thị icon trên thanh trạng thái
             if (rankingMap != null && rankingMap.getRanking(sbn.key, tempRanking)) {
                 if (tempRanking.importance <= NotificationManager.IMPORTANCE_MIN) continue
             }
 
-            // Các thông báo cùng nhóm trên thanh trạng thái được gom thành 1 icon duy nhất
+            // Gom nhóm các thông báo cùng nhóm thành 1 icon trên thanh trạng thái
             if (sbn.isGroup) {
                 val groupId = "${sbn.packageName}:${sbn.groupKey}"
                 if (seenGroups.add(groupId)) {
@@ -78,8 +82,20 @@ class StatusBarNotificationListener : NotificationListenerService() {
     }
 
     companion object {
+        @Volatile
+        private var activeInstance: StatusBarNotificationListener? = null
+
+        fun refreshNow(context: Context) {
+            val listener = activeInstance
+            if (listener != null) {
+                listener.recalculateVisibleIcons()
+            } else {
+                requestRebindIfNeeded(context)
+            }
+        }
+
         fun requestRebindIfNeeded(context: Context) {
-            if (!NotificationTracker.state.value.isConnected) {
+            if (activeInstance == null || !NotificationTracker.state.value.isConnected) {
                 runCatching {
                     requestRebind(ComponentName(context, StatusBarNotificationListener::class.java))
                 }

@@ -22,6 +22,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.TypedValue
+import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.TextView
@@ -29,6 +30,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.statusbardate.MainActivity
 import com.example.statusbardate.R
+import com.example.statusbardate.data.FontStyleOption
 import com.example.statusbardate.data.OverlayConfig
 import com.example.statusbardate.data.PrefsManager
 import com.example.statusbardate.data.TextColorMode
@@ -68,15 +70,18 @@ class DateOverlayService : Service() {
     private val foregroundPollRunnable = object : Runnable {
         override fun run() {
             val config = prefsManager.config.value
-            if (config.isEnabled &&
-                config.colorMode == TextColorMode.AUTO &&
-                config.autoDetectLightApps &&
-                powerManager.isInteractive
-            ) {
-                detectForegroundPackage()?.let { pkg ->
-                    if (pkg != currentForegroundPackage) {
-                        currentForegroundPackage = pkg
-                        applyTextColor(config)
+            if (config.isEnabled && powerManager.isInteractive) {
+                if (config.autoDodgeNotifications &&
+                    PermissionHelper.hasNotificationListenerPermission(this@DateOverlayService)
+                ) {
+                    StatusBarNotificationListener.refreshNow(this@DateOverlayService)
+                }
+                if (config.colorMode == TextColorMode.AUTO && config.autoDetectLightApps) {
+                    detectForegroundPackage()?.let { pkg ->
+                        if (pkg != currentForegroundPackage) {
+                            currentForegroundPackage = pkg
+                            applyTextColor(config)
+                        }
                     }
                 }
                 mainHandler.postDelayed(this, POLL_INTERVAL_MS)
@@ -125,7 +130,7 @@ class DateOverlayService : Service() {
         }
 
         if (PermissionHelper.hasNotificationListenerPermission(this)) {
-            StatusBarNotificationListener.requestRebindIfNeeded(this)
+            StatusBarNotificationListener.refreshNow(this)
         }
 
         setupOverlayView()
@@ -153,7 +158,7 @@ class DateOverlayService : Service() {
             return START_NOT_STICKY
         }
         if (PermissionHelper.hasNotificationListenerPermission(this)) {
-            StatusBarNotificationListener.requestRebindIfNeeded(this)
+            StatusBarNotificationListener.refreshNow(this)
         }
         refreshDateText()
         restartForegroundPollingIfNeeded()
@@ -165,11 +170,13 @@ class DateOverlayService : Service() {
 
         val config = prefsManager.config.value
         val notifState = NotificationTracker.state.value
-        val textView = TextView(this).apply {
-            typeface = config.fontStyle.toAndroidTypeface()
+        val themedContext = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
+        val textView = TextView(themedContext).apply {
             fontFeatureSettings = "tnum"
+            letterSpacing = 0.01f
             includeFontPadding = false
             setSingleLine(true)
+            applyTypography(config)
         }
 
         val effectiveX = computeEffectiveX(config, notifState)
@@ -217,7 +224,7 @@ class DateOverlayService : Service() {
         val params = layoutParams ?: return
 
         tv.text = config.formatOption.format()
-        tv.typeface = config.fontStyle.toAndroidTypeface()
+        tv.applyTypography(config)
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, config.textSizeSp)
         applyTextColor(config)
 
@@ -228,6 +235,25 @@ class DateOverlayService : Service() {
             try {
                 windowManager.updateViewLayout(tv, params)
             } catch (_: IllegalArgumentException) {
+            }
+        }
+    }
+
+    private fun TextView.applyTypography(config: OverlayConfig) {
+        typeface = config.fontStyle.toAndroidTypeface(config.fontWeight)
+        val effectiveWeight = when (config.fontStyle) {
+            FontStyleOption.OPPO_SANS -> config.fontWeight.coerceIn(300, 700)
+            FontStyleOption.SYSTEM_REGULAR -> 400
+            FontStyleOption.SYSTEM_MEDIUM -> 500
+            FontStyleOption.SYSTEM_SEMIBOLD -> 600
+            FontStyleOption.SANS_LIGHT -> 300
+            else -> null
+        }
+        runCatching {
+            fontVariationSettings = if (effectiveWeight != null) {
+                "'wght' $effectiveWeight"
+            } else {
+                null
             }
         }
     }
@@ -262,26 +288,29 @@ class DateOverlayService : Service() {
 
         if (useWhiteText) {
             tv.setTextColor(Color.WHITE)
-            tv.setShadowLayer(2.2f, 0f, 1f, Color.argb(135, 0, 0, 0))
+            tv.setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
         } else {
             tv.setTextColor(Color.parseColor("#1C1B1F"))
-            tv.setShadowLayer(1.8f, 0f, 1f, Color.argb(105, 255, 255, 255))
+            tv.setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
         }
     }
 
     private fun restartForegroundPollingIfNeeded() {
         mainHandler.removeCallbacks(foregroundPollRunnable)
         val config = prefsManager.config.value
-        if (config.isEnabled &&
-            config.colorMode == TextColorMode.AUTO &&
+        val needLightAppPoll = config.colorMode == TextColorMode.AUTO &&
             config.autoDetectLightApps &&
-            PermissionHelper.hasUsageStatsPermission(this) &&
-            powerManager.isInteractive
-        ) {
-            mainHandler.post(foregroundPollRunnable)
-        } else {
+            PermissionHelper.hasUsageStatsPermission(this)
+        val needNotifPoll = config.autoDodgeNotifications &&
+            PermissionHelper.hasNotificationListenerPermission(this)
+
+        if (!needLightAppPoll) {
             currentForegroundPackage = null
             applyTextColor(config)
+        }
+
+        if (config.isEnabled && powerManager.isInteractive && (needLightAppPoll || needNotifPoll)) {
+            mainHandler.post(foregroundPollRunnable)
         }
     }
 
@@ -362,6 +391,8 @@ class DateOverlayService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setOngoing(true)
             .setSilent(true)
+            .setShowWhen(false)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .setContentIntent(openAppIntent)
             .build()
 

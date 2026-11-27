@@ -73,6 +73,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.statusbardate.data.DateFormatOption
 import com.example.statusbardate.data.FontStyleOption
+import com.example.statusbardate.data.OemFontResolver
 import com.example.statusbardate.data.PrefsManager
 import com.example.statusbardate.data.TextColorMode
 import com.example.statusbardate.service.DateOverlayService
@@ -124,7 +125,7 @@ fun MainScreen() {
                 hasNotifListenerPerm = PermissionHelper.hasNotificationListenerPermission(context)
 
                 if (hasNotifListenerPerm) {
-                    StatusBarNotificationListener.requestRebindIfNeeded(context)
+                    StatusBarNotificationListener.refreshNow(context)
                 }
 
                 if (config.isEnabled && hasOverlayPerm) {
@@ -254,7 +255,7 @@ fun MainScreen() {
                         fgColor = Color.White,
                         fontSizeSp = config.textSizeSp,
                         fontFamily = config.fontStyle.toComposeFontFamily(),
-                        fontWeight = config.fontStyle.toComposeFontWeight()
+                        fontWeight = config.fontStyle.toComposeFontWeight(config.fontWeight)
                     )
                     StatusBarPreviewRow(
                         timeText = currentTime,
@@ -263,7 +264,7 @@ fun MainScreen() {
                         fgColor = Color(0xFF1C1B1F),
                         fontSizeSp = config.textSizeSp,
                         fontFamily = config.fontStyle.toComposeFontFamily(),
-                        fontWeight = config.fontStyle.toComposeFontWeight()
+                        fontWeight = config.fontStyle.toComposeFontWeight(config.fontWeight)
                     )
                 }
             }
@@ -323,15 +324,15 @@ fun MainScreen() {
 
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                 Text(
-                                    text = "Mẹo Android 13+: Nếu nút bật bị xám (Cài đặt bị hạn chế), hãy bấm nút bên dưới → chạm dấu 3 chấm (⋮) góc trên bên phải → chọn «Cho phép cài đặt bị hạn chế».",
+                                    text = "Bắt buộc trên OPPO (ColorOS): Bấm nút bên dưới → chạm dấu 3 chấm (⋮) góc trên bên phải → chọn «Cho phép cài đặt bị hạn chế», sau đó mới bật được quyền Truy cập thông báo ở nút trên.",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.error
                                 )
                                 OutlinedButton(
                                     onClick = { PermissionHelper.openAppDetailsSettings(context) },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text("Mở thông tin ứng dụng (Bật cài đặt bị hạn chế)")
+                                    Text("Bước 1: Mở Thông tin ứng dụng (Bật cài đặt bị hạn chế)")
                                 }
                             }
                         }
@@ -394,6 +395,34 @@ fun MainScreen() {
                                 label = { Text(style.label) }
                             )
                         }
+                    }
+
+                    if (config.fontStyle == FontStyleOption.OPPO_SANS) {
+                        val detectedFont = remember { OemFontResolver.resolveOppoOrSystem().sourceName }
+                        Text(
+                            text = "Font hệ thống nhận diện: $detectedFont • Độ đậm: ${config.fontWeight}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { prefsManager.setFontWeight(450) }) {
+                                Text("Mảnh (450)")
+                            }
+                            OutlinedButton(onClick = { prefsManager.setFontWeight(550) }) {
+                                Text("Chuẩn OPPO (550)")
+                            }
+                            OutlinedButton(onClick = { prefsManager.setFontWeight(620) }) {
+                                Text("Đậm (620)")
+                            }
+                        }
+                        Slider(
+                            value = config.fontWeight.toFloat(),
+                            onValueChange = {
+                                val snapped = ((it / 25f).roundToInt() * 25).coerceIn(300, 700)
+                                prefsManager.setFontWeight(snapped)
+                            },
+                            valueRange = 300f..700f
+                        )
                     }
                 }
             }
@@ -485,10 +514,10 @@ fun MainScreen() {
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { prefsManager.setOffset(165, 14) }) {
+                        OutlinedButton(onClick = { prefsManager.setOffset(PrefsManager.DEFAULT_OFFSET_X, PrefsManager.DEFAULT_OFFSET_Y) }) {
                             Text("Góc trái (cạnh giờ)")
                         }
-                        OutlinedButton(onClick = { prefsManager.setOffset(480, 14) }) {
+                        OutlinedButton(onClick = { prefsManager.setOffset(480, PrefsManager.DEFAULT_OFFSET_Y) }) {
                             Text("Giữa màn hình")
                         }
                     }
