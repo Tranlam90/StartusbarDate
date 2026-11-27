@@ -15,6 +15,7 @@ import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -24,9 +25,8 @@ import android.provider.Settings
 import android.util.TypedValue
 import android.view.ContextThemeWrapper
 import android.view.Gravity
-import android.view.ViewGroup
+import android.view.View
 import android.view.WindowManager
-import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.time.Duration
 import java.time.ZonedDateTime
+import kotlin.math.roundToInt
 
 class DateOverlayService : Service() {
 
@@ -56,7 +57,6 @@ class DateOverlayService : Service() {
     private lateinit var usageStatsManager: UsageStatsManager
     private lateinit var powerManager: PowerManager
 
-    private var containerView: FrameLayout? = null
     private var dateTextView: TextView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var currentForegroundPackage: String? = null
@@ -178,11 +178,10 @@ class DateOverlayService : Service() {
     }
 
     private fun setupOverlayView() {
-        if (containerView != null) return
+        if (dateTextView != null) return
 
         val config = prefsManager.config.value
         val notifState = NotificationTracker.state.value
-        val metrics = getMetrics()
         val themedContext = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
 
         val textView = TextView(themedContext).apply {
@@ -190,34 +189,23 @@ class DateOverlayService : Service() {
             letterSpacing = 0.01f
             includeFontPadding = false
             setSingleLine(true)
-            gravity = Gravity.CENTER_VERTICAL or Gravity.START
+            setPadding(0, 0, 0, 0)
             applyTypography(config)
-        }
-
-        val container = FrameLayout(themedContext).apply {
-            clipChildren = false
-            clipToPadding = false
-            addView(
-                textView,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.CENTER_VERTICAL or Gravity.START
-                )
-            )
+            addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+                val newH = bottom - top
+                val oldH = oldBottom - oldTop
+                if (newH > 0 && newH != oldH) {
+                    repositionWindow(prefsManager.config.value, NotificationTracker.state.value)
+                }
+            }
         }
 
         val effectiveX = computeEffectiveX(config, notifState)
-        val targetY = if (config.autoMatchClock) config.verticalNudgePx else config.offsetY
-        val targetHeight = if (config.autoMatchClock) {
-            metrics.statusBarHeightPx
-        } else {
-            WindowManager.LayoutParams.WRAP_CONTENT
-        }
+        val initialY = computeEffectiveY(config, textView)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
-            targetHeight,
+            WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
@@ -227,15 +215,14 @@ class DateOverlayService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = effectiveX
-            y = targetY
+            y = initialY
             layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
 
-        containerView = container
         dateTextView = textView
         layoutParams = params
-        windowManager.addView(container, params)
+        windowManager.addView(textView, params)
         updateOverlayAppearance(config, notifState)
     }
 
@@ -251,13 +238,51 @@ class DateOverlayService : Service() {
         return config.offsetX + (dodgedIcons * config.iconStepPx)
     }
 
+    private fun computeEffectiveY(config: OverlayConfig, tv: TextView): Int {
+        if (!config.autoMatchClock) {
+            return config.offsetY
+        }
+        val metrics = getMetrics()
+        val measuredHeight = if (tv.height > 0) {
+            tv.height
+        } else {
+            val widthSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            val heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            tv.measure(widthSpec, heightSpec)
+            tv.measuredHeight
+        }
+
+        // Bù thêm +2px thực nghiệm cho phần khoảng trống ascender phía trên ký tự số của OplusSans/Roboto
+        // để đỉnh và chân chữ khớp chính xác từng pixel với đồng hồ SystemUI
+        val baselineOpticalCompensation = (metrics.statusBarHeightPx * 0.02f).roundToInt().coerceAtLeast(2)
+        val centeredY = ((metrics.statusBarHeightPx - measuredHeight) / 2f).roundToInt()
+        return centeredY + baselineOpticalCompensation + config.verticalNudgePx
+    }
+
+    private fun repositionWindow(
+        config: OverlayConfig,
+        notifState: StatusBarNotificationState
+    ) {
+        val tv = dateTextView ?: return
+        val params = layoutParams ?: return
+        val targetX = computeEffectiveX(config, notifState)
+        val targetY = computeEffectiveY(config, tv)
+
+        if (params.x != targetX || params.y != targetY) {
+            params.x = targetX
+            params.y = targetY
+            try {
+                windowManager.updateViewLayout(tv, params)
+            } catch (_: IllegalArgumentException) {
+            }
+        }
+    }
+
     private fun updateOverlayAppearance(
         config: OverlayConfig,
         notifState: StatusBarNotificationState
     ) {
-        val container = containerView ?: return
         val tv = dateTextView ?: return
-        val params = layoutParams ?: return
         val metrics = getMetrics()
 
         tv.text = config.formatOption.format()
@@ -270,46 +295,30 @@ class DateOverlayService : Service() {
         }
 
         applyTextColor(config)
-
-        val targetX = computeEffectiveX(config, notifState)
-        val targetY = if (config.autoMatchClock) config.verticalNudgePx else config.offsetY
-        val targetHeight = if (config.autoMatchClock) {
-            metrics.statusBarHeightPx
-        } else {
-            WindowManager.LayoutParams.WRAP_CONTENT
-        }
-
-        if (params.x != targetX || params.y != targetY || params.height != targetHeight) {
-            params.x = targetX
-            params.y = targetY
-            params.height = targetHeight
-            try {
-                windowManager.updateViewLayout(container, params)
-            } catch (_: IllegalArgumentException) {
-            }
-        }
+        tv.invalidate()
+        tv.requestLayout()
+        repositionWindow(config, notifState)
     }
 
     private fun TextView.applyTypography(config: OverlayConfig) {
-        typeface = config.fontStyle.toAndroidTypeface(
+        // Reset variation trước khi gán typeface mới để Android không giữ cache glyph cũ
+        runCatching { fontVariationSettings = null }
+        val tf = config.fontStyle.toAndroidTypeface(
             weight = config.fontWeight,
             selectedOemFontId = config.selectedOemFontId,
             customFontPath = config.customFontPath
         )
+        setTypeface(tf, Typeface.NORMAL)
+        paint.isFakeBoldText = false
+
         val effectiveWeight = when (config.fontStyle) {
             FontStyleOption.OPPO_SANS,
             FontStyleOption.CUSTOM_FILE -> config.fontWeight.coerceIn(300, 700)
-            FontStyleOption.SYSTEM_REGULAR -> 400
-            FontStyleOption.SYSTEM_MEDIUM -> 500
-            FontStyleOption.SYSTEM_SEMIBOLD -> 600
-            FontStyleOption.SANS_LIGHT -> 300
             else -> null
         }
-        runCatching {
-            fontVariationSettings = if (effectiveWeight != null) {
-                "'wght' $effectiveWeight"
-            } else {
-                null
+        if (effectiveWeight != null) {
+            runCatching {
+                fontVariationSettings = "'wght' $effectiveWeight"
             }
         }
     }
@@ -472,13 +481,12 @@ class DateOverlayService : Service() {
             unregisterReceiver(systemEventReceiver)
         } catch (_: IllegalArgumentException) {
         }
-        containerView?.let {
+        dateTextView?.let {
             try {
                 windowManager.removeView(it)
             } catch (_: IllegalArgumentException) {
             }
         }
-        containerView = null
         dateTextView = null
         super.onDestroy()
     }

@@ -1,6 +1,9 @@
 package com.example.statusbardate.ui
 
 import android.Manifest
+import android.graphics.Typeface
+import android.util.TypedValue
+import android.widget.TextView
 import android.widget.Toast
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -65,6 +68,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -265,23 +269,40 @@ fun MainScreen() {
                     val currentTime = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
                     val formattedDate = config.formatOption.format()
 
+                    val previewTypeface = remember(
+                        config.fontStyle,
+                        config.fontWeight,
+                        config.selectedOemFontId,
+                        config.customFontPath
+                    ) {
+                        config.fontStyle.toAndroidTypeface(
+                            weight = config.fontWeight,
+                            selectedOemFontId = config.selectedOemFontId,
+                            customFontPath = config.customFontPath
+                        )
+                    }
+                    val previewWeight = if (
+                        config.fontStyle == FontStyleOption.OPPO_SANS ||
+                        config.fontStyle == FontStyleOption.CUSTOM_FILE
+                    ) config.fontWeight else null
+
                     StatusBarPreviewRow(
                         timeText = currentTime,
                         dateText = formattedDate,
                         bgColor = Color(0xFF141414),
-                        fgColor = Color.White,
+                        fgColor = android.graphics.Color.WHITE,
                         fontSizeSp = if (config.autoMatchClock) clockMetrics.clockTextSizeSp else config.textSizeSp,
-                        fontFamily = config.fontStyle.toComposeFontFamily(config.selectedOemFontId, config.customFontPath),
-                        fontWeight = config.fontStyle.toComposeFontWeight(config.fontWeight)
+                        androidTypeface = previewTypeface,
+                        variationWeight = previewWeight
                     )
                     StatusBarPreviewRow(
                         timeText = currentTime,
                         dateText = formattedDate,
                         bgColor = Color(0xFFF2F2F2),
-                        fgColor = Color(0xFF1C1B1F),
+                        fgColor = android.graphics.Color.parseColor("#1C1B1F"),
                         fontSizeSp = if (config.autoMatchClock) clockMetrics.clockTextSizeSp else config.textSizeSp,
-                        fontFamily = config.fontStyle.toComposeFontFamily(config.selectedOemFontId, config.customFontPath),
-                        fontWeight = config.fontStyle.toComposeFontWeight(config.fontWeight)
+                        androidTypeface = previewTypeface,
+                        variationWeight = previewWeight
                     )
                 }
             }
@@ -601,20 +622,26 @@ fun MainScreen() {
                     )
 
                     if (config.autoMatchClock) {
-                        if (config.verticalNudgePx != 0) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    text = "Vi chỉnh dọc: ${config.verticalNudgePx} px",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Vi chỉnh độ cao (±12 px): ${config.verticalNudgePx} px",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            if (config.verticalNudgePx != 0) {
                                 TextButton(onClick = { prefsManager.setVerticalNudgePx(0) }) {
-                                    Text("Đặt lại 0 px")
+                                    Text("Về 0 px")
                                 }
                             }
                         }
+                        Slider(
+                            value = config.verticalNudgePx.toFloat(),
+                            onValueChange = { prefsManager.setVerticalNudgePx(it.roundToInt()) },
+                            valueRange = -12f..12f
+                        )
                     } else {
                         Text("Vị trí dọc thủ công (Y): ${config.offsetY} px", style = MaterialTheme.typography.bodySmall)
                         Slider(
@@ -790,11 +817,12 @@ private fun StatusBarPreviewRow(
     timeText: String,
     dateText: String,
     bgColor: Color,
-    fgColor: Color,
+    fgColor: Int,
     fontSizeSp: Float,
-    fontFamily: FontFamily,
-    fontWeight: FontWeight
+    androidTypeface: Typeface,
+    variationWeight: Int?
 ) {
+    val composeFgColor = Color(fgColor)
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -812,17 +840,28 @@ private fun StatusBarPreviewRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = timeText,
-                    color = fgColor,
+                    color = composeFgColor,
                     fontSize = fontSizeSp.sp,
                     fontWeight = FontWeight.Medium
                 )
                 Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = dateText,
-                    color = fgColor,
-                    fontSize = fontSizeSp.sp,
-                    fontFamily = fontFamily,
-                    fontWeight = fontWeight
+                AndroidView(
+                    factory = { ctx ->
+                        TextView(ctx).apply {
+                            includeFontPadding = false
+                            fontFeatureSettings = "tnum"
+                        }
+                    },
+                    update = { tv ->
+                        tv.text = dateText
+                        tv.setTextColor(fgColor)
+                        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeSp)
+                        runCatching { tv.fontVariationSettings = null }
+                        tv.setTypeface(androidTypeface, Typeface.NORMAL)
+                        if (variationWeight != null) {
+                            runCatching { tv.fontVariationSettings = "'wght' $variationWeight" }
+                        }
+                    }
                 )
             }
             Row(
@@ -832,13 +871,13 @@ private fun StatusBarPreviewRow(
                 Icon(
                     imageVector = Icons.Outlined.Wifi,
                     contentDescription = null,
-                    tint = fgColor,
+                    tint = composeFgColor,
                     modifier = Modifier.size(14.dp)
                 )
                 Icon(
                     imageVector = Icons.Outlined.SignalCellularAlt,
                     contentDescription = null,
-                    tint = fgColor,
+                    tint = composeFgColor,
                     modifier = Modifier.size(14.dp)
                 )
             }

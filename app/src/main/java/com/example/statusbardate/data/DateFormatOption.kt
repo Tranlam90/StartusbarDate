@@ -3,6 +3,7 @@ package com.example.statusbardate.data
 import android.content.Context
 import android.graphics.Typeface
 import android.net.Uri
+import android.os.Build
 import android.util.Xml
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -45,7 +46,8 @@ object OemFontResolver {
         val id: String,
         val typeface: Typeface,
         val sourceName: String,
-        val priority: Int
+        val priority: Int,
+        val isRealFile: Boolean
     )
 
     private val cachedCandidates: List<ResolvedFont> by lazy {
@@ -162,12 +164,12 @@ object OemFontResolver {
                     id = path,
                     typeface = tf,
                     sourceName = name,
-                    priority = priority
+                    priority = priority,
+                    isRealFile = true
                 )
             )
         }
 
-        // Thử thêm tên family nội bộ của ColorOS nếu chưa thấy file trực tiếp
         val oemFamilies = listOf("oplus-sans", "oppo-sans", "sys-sans-en", "oneplus-sans")
         for (fam in oemFamilies) {
             val tf = runCatching { Typeface.create(fam, Typeface.NORMAL) }.getOrNull()
@@ -177,7 +179,8 @@ object OemFontResolver {
                         id = "family:$fam",
                         typeface = tf,
                         sourceName = fam,
-                        priority = 5
+                        priority = 5,
+                        isRealFile = false
                     )
                 )
             }
@@ -189,7 +192,8 @@ object OemFontResolver {
                     id = "sans-serif-medium",
                     typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL),
                     sourceName = "sans-serif-medium",
-                    priority = 10
+                    priority = 10,
+                    isRealFile = false
                 )
             )
         }
@@ -286,22 +290,23 @@ enum class FontStyleOption(val label: String) {
         val clampedWeight = weight.coerceIn(300, 700)
         return when (this) {
             OPPO_SANS -> {
-                val base = OemFontResolver.resolveById(selectedOemFontId).typeface
-                Typeface.create(base, clampedWeight, false)
+                val resolved = OemFontResolver.resolveById(selectedOemFontId)
+                // Giữ nguyên Typeface gốc đọc từ file font hệ thống/tùy biến;
+                // chỉ dùng Typeface.create(base, weight, false) khi không phải file tĩnh
+                if (resolved.isRealFile) {
+                    resolved.typeface
+                } else {
+                    Typeface.create(resolved.typeface, clampedWeight, false)
+                }
             }
             CUSTOM_FILE -> {
-                val custom = OemFontResolver.loadCustomFontFile(customFontPath)
-                if (custom != null) {
-                    Typeface.create(custom, clampedWeight, false)
-                } else {
-                    val base = OemFontResolver.resolveById(selectedOemFontId).typeface
-                    Typeface.create(base, clampedWeight, false)
-                }
+                OemFontResolver.loadCustomFontFile(customFontPath)
+                    ?: OemFontResolver.resolveById(selectedOemFontId).typeface
             }
             SYSTEM_MEDIUM -> Typeface.create("sans-serif-medium", Typeface.NORMAL)
             SYSTEM_REGULAR -> Typeface.create("sans-serif", Typeface.NORMAL)
-            SYSTEM_SEMIBOLD -> Typeface.create("sans-serif-medium", Typeface.BOLD)
-            SANS_LIGHT -> Typeface.create("sans-serif-light", Typeface.NORMAL)
+            SYSTEM_SEMIBOLD -> Typeface.create("sans-serif-black", Typeface.NORMAL)
+            SANS_LIGHT -> Typeface.create("sans-serif-thin", Typeface.NORMAL)
             SANS_CONDENSED -> Typeface.create("sans-serif-condensed", Typeface.NORMAL)
             MONOSPACE -> Typeface.MONOSPACE
         }
@@ -313,11 +318,15 @@ enum class FontStyleOption(val label: String) {
     ): FontFamily {
         return when (this) {
             MONOSPACE -> FontFamily.Monospace
+            SANS_CONDENSED -> FontFamily(Typeface.create("sans-serif-condensed", Typeface.NORMAL))
+            SANS_LIGHT -> FontFamily(Typeface.create("sans-serif-thin", Typeface.NORMAL))
+            SYSTEM_SEMIBOLD -> FontFamily(Typeface.create("sans-serif-black", Typeface.NORMAL))
+            SYSTEM_REGULAR -> FontFamily(Typeface.create("sans-serif", Typeface.NORMAL))
+            SYSTEM_MEDIUM -> FontFamily(Typeface.create("sans-serif-medium", Typeface.NORMAL))
             OPPO_SANS, CUSTOM_FILE -> {
                 val tf = toAndroidTypeface(550, selectedOemFontId, customFontPath)
                 FontFamily(tf)
             }
-            else -> FontFamily.Default
         }
     }
 
@@ -326,7 +335,7 @@ enum class FontStyleOption(val label: String) {
             OPPO_SANS, CUSTOM_FILE -> FontWeight(weight.coerceIn(300, 700))
             SYSTEM_REGULAR, SANS_CONDENSED -> FontWeight.Normal
             SYSTEM_MEDIUM -> FontWeight.Medium
-            SYSTEM_SEMIBOLD -> FontWeight.SemiBold
+            SYSTEM_SEMIBOLD -> FontWeight.Bold
             SANS_LIGHT -> FontWeight.Light
             MONOSPACE -> FontWeight.Normal
         }
