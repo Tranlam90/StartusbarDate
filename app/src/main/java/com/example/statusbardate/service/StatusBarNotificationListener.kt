@@ -55,11 +55,11 @@ class StatusBarNotificationListener : NotificationListenerService() {
             if (sbn.packageName == packageName) continue
 
             val notif = sbn.notification ?: continue
+            if (notif.smallIcon == null) continue
 
-            // Kiểm tra mức độ quan trọng & trạng thái ẩn trên thanh trạng thái
+            // Bỏ qua các thông báo mức tối thiểu (IMPORTANCE_MIN) vì không hiển thị icon trên thanh trạng thái
             if (rankingMap != null && rankingMap.getRanking(sbn.key, tempRanking)) {
                 if (tempRanking.importance <= NotificationManager.IMPORTANCE_MIN) continue
-                if (tempRanking.isAmbient) continue
             }
 
             // Các thông báo cùng nhóm trên thanh trạng thái được gom thành 1 icon duy nhất
