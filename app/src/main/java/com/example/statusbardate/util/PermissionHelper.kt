@@ -2,6 +2,7 @@ package com.example.statusbardate.util
 
 import android.Manifest
 import android.app.AppOpsManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,7 +11,9 @@ import android.os.Build
 import android.os.PowerManager
 import android.os.Process
 import android.provider.Settings
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import com.example.statusbardate.service.StatusBarNotificationListener
 
 data class InstalledAppInfo(
     val label: String,
@@ -49,6 +52,12 @@ object PermissionHelper {
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
+    fun hasNotificationListenerPermission(context: Context): Boolean {
+        return NotificationManagerCompat
+            .getEnabledListenerPackages(context)
+            .contains(context.packageName)
+    }
+
     fun openOverlayPermissionSettings(context: Context) {
         val intent = Intent(
             Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -85,6 +94,33 @@ object PermissionHelper {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
         }
+    }
+
+    fun openNotificationListenerSettings(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val cn = ComponentName(context, StatusBarNotificationListener::class.java)
+            val detailIntent = Intent("android.settings.NOTIFICATION_LISTENER_DETAIL_SETTINGS")
+                .putExtra(
+                    "android.provider.extra.NOTIFICATION_LISTENER_COMPONENT_NAME",
+                    cn.flattenToString()
+                )
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (runCatching { context.startActivity(detailIntent) }.isSuccess) {
+                return
+            }
+        }
+        context.startActivity(
+            Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
+
+    fun openAppDetailsSettings(context: Context) {
+        val intent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${context.packageName}")
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
     }
 
     fun getLaunchableApps(context: Context): List<InstalledAppInfo> {

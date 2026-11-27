@@ -31,6 +31,7 @@ import androidx.compose.material.icons.outlined.BatteryChargingFull
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.SignalCellularAlt
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.Wifi
@@ -75,6 +76,8 @@ import com.example.statusbardate.data.FontStyleOption
 import com.example.statusbardate.data.PrefsManager
 import com.example.statusbardate.data.TextColorMode
 import com.example.statusbardate.service.DateOverlayService
+import com.example.statusbardate.service.NotificationTracker
+import com.example.statusbardate.service.StatusBarNotificationListener
 import com.example.statusbardate.util.InstalledAppInfo
 import com.example.statusbardate.util.PermissionHelper
 import java.time.LocalTime
@@ -89,6 +92,7 @@ fun MainScreen() {
     val lifecycleOwner = LocalLifecycleOwner.current
     val prefsManager = remember { PrefsManager.getInstance(context) }
     val config by prefsManager.config.collectAsState()
+    val notifState by NotificationTracker.state.collectAsState()
 
     var hasOverlayPerm by remember { mutableStateOf(PermissionHelper.canDrawOverlays(context)) }
     var hasNotifPerm by remember { mutableStateOf(PermissionHelper.hasNotificationPermission(context)) }
@@ -97,6 +101,9 @@ fun MainScreen() {
     }
     var hasUsagePerm by remember {
         mutableStateOf(PermissionHelper.hasUsageStatsPermission(context))
+    }
+    var hasNotifListenerPerm by remember {
+        mutableStateOf(PermissionHelper.hasNotificationListenerPermission(context))
     }
 
     var showLightAppsDialog by remember { mutableStateOf(false) }
@@ -114,6 +121,11 @@ fun MainScreen() {
                 hasNotifPerm = PermissionHelper.hasNotificationPermission(context)
                 isBatteryIgnored = PermissionHelper.isIgnoringBatteryOptimizations(context)
                 hasUsagePerm = PermissionHelper.hasUsageStatsPermission(context)
+                hasNotifListenerPerm = PermissionHelper.hasNotificationListenerPermission(context)
+
+                if (hasNotifListenerPerm) {
+                    StatusBarNotificationListener.requestRebindIfNeeded(context)
+                }
 
                 if (config.isEnabled && hasOverlayPerm) {
                     DateOverlayService.start(context)
@@ -193,7 +205,7 @@ fun MainScreen() {
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Tự cập nhật ngày mới & đổi màu theo ứng dụng",
+                                text = "Tự né icon thông báo & đổi màu theo ứng dụng",
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
@@ -256,7 +268,99 @@ fun MainScreen() {
                 }
             }
 
-            // 3. Định dạng ngày tháng & Kiểu font
+            // 3. Tự động dịch sang phải né icon thông báo
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Tự dịch sang phải né icon thông báo",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = if (hasNotifListenerPerm && notifState.isConnected) {
+                                    val clamped = notifState.visibleIconCount.coerceIn(0, config.maxDodgeIcons)
+                                    val shift = if (config.autoDodgeNotifications) clamped * config.iconStepPx else 0
+                                    "Đang thấy ${notifState.visibleIconCount} icon → dịch phải +$shift px"
+                                } else if (hasNotifListenerPerm) {
+                                    "Đã cấp quyền, đang kết nối dịch vụ đếm icon..."
+                                } else {
+                                    "Cần cấp quyền Truy cập thông báo để đếm icon"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = config.autoDodgeNotifications,
+                            onCheckedChange = { wantDodge ->
+                                if (wantDodge && !hasNotifListenerPerm) {
+                                    PermissionHelper.openNotificationListenerSettings(context)
+                                }
+                                prefsManager.setAutoDodgeNotifications(wantDodge)
+                            }
+                        )
+                    }
+
+                    if (config.autoDodgeNotifications) {
+                        if (!hasNotifListenerPerm) {
+                            Button(
+                                onClick = { PermissionHelper.openNotificationListenerSettings(context) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Outlined.NotificationsActive, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Cấp quyền Truy cập thông báo (Né icon)")
+                            }
+
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                Text(
+                                    text = "Mẹo Android 13+: Nếu nút bật bị xám (Cài đặt bị hạn chế), hãy bấm nút bên dưới → chạm dấu 3 chấm (⋮) góc trên bên phải → chọn "Cho phép cài đặt bị hạn chế".",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                OutlinedButton(
+                                    onClick = { PermissionHelper.openAppDetailsSettings(context) },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Mở thông tin ứng dụng (Bật cài đặt bị hạn chế)")
+                                }
+                            }
+                        }
+
+                        Text(
+                            text = "Khoảng cách dịch mỗi 1 icon: ${config.iconStepPx} px",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Slider(
+                            value = config.iconStepPx.toFloat(),
+                            onValueChange = { prefsManager.setIconStepPx(it.roundToInt()) },
+                            valueRange = 28f..100f
+                        )
+
+                        Text(
+                            text = "Số icon dịch tối đa (tránh đụng camera): ${config.maxDodgeIcons} icon",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Slider(
+                            value = config.maxDodgeIcons.toFloat(),
+                            onValueChange = { prefsManager.setMaxDodgeIcons(it.roundToInt()) },
+                            valueRange = 1f..6f,
+                            steps = 4
+                        )
+                    }
+                }
+            }
+
+            // 4. Định dạng ngày tháng & Kiểu font
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -294,7 +398,7 @@ fun MainScreen() {
                 }
             }
 
-            // 4. Màu chữ & Tự động đổi màu theo ứng dụng
+            // 5. Màu chữ & Tự động đổi màu theo ứng dụng
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -368,14 +472,14 @@ fun MainScreen() {
                 }
             }
 
-            // 5. Căn chỉnh vị trí & Cỡ chữ
+            // 6. Căn chỉnh vị trí gốc & Cỡ chữ
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "Căn chỉnh vị trí cạnh đồng hồ",
+                        text = "Vị trí gốc (khi chưa có thông báo) & Cỡ chữ",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -389,7 +493,7 @@ fun MainScreen() {
                         }
                     }
 
-                    Text("Vị trí ngang (X): ${config.offsetX} px", style = MaterialTheme.typography.bodySmall)
+                    Text("Vị trí ngang gốc (X): ${config.offsetX} px", style = MaterialTheme.typography.bodySmall)
                     Slider(
                         value = config.offsetX.toFloat(),
                         onValueChange = { prefsManager.setOffset(it.roundToInt(), config.offsetY) },
@@ -415,14 +519,14 @@ fun MainScreen() {
                 }
             }
 
-            // 6. Quyền hệ thống & Độ ổn định
+            // 7. Quyền hệ thống & Độ ổn định
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        text = "Quyền hệ thống & Độ ổn định",
+                        text = "Tổng hợp quyền hệ thống",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -440,14 +544,26 @@ fun MainScreen() {
                     }
 
                     OutlinedButton(
+                        onClick = { PermissionHelper.openNotificationListenerSettings(context) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Outlined.NotificationsActive, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (hasNotifListenerPerm) "2. Truy cập thông báo (Né icon): Đã cấp"
+                            else "2. Cấp quyền Truy cập thông báo (Né icon)"
+                        )
+                    }
+
+                    OutlinedButton(
                         onClick = { PermissionHelper.openUsageAccessSettings(context) },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Outlined.Visibility, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (hasUsagePerm) "2. Nhận diện app nền sáng: Đã cấp"
-                            else "2. Cấp quyền nhận diện app (đổi màu Facebook)"
+                            if (hasUsagePerm) "3. Nhận diện app nền sáng: Đã cấp"
+                            else "3. Cấp quyền nhận diện app (Đổi màu Facebook)"
                         )
                     }
 
@@ -458,8 +574,8 @@ fun MainScreen() {
                         Icon(Icons.Outlined.BatteryChargingFull, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (isBatteryIgnored) "3. Tối ưu hóa pin: Đã tắt (Ổn định)"
-                            else "3. Tắt tối ưu hóa pin (Tránh bị hệ thống đóng)"
+                            if (isBatteryIgnored) "4. Tối ưu hóa pin: Đã tắt (Ổn định)"
+                            else "4. Tắt tối ưu hóa pin (Tránh bị hệ thống đóng)"
                         )
                     }
                 }

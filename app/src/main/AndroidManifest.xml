@@ -44,6 +44,16 @@
                 android:value="Hien thi nhan ngay/thang nho canh dong ho tren thanh trang thai." />
         </service>
 
+        <service
+            android:name=".service.StatusBarNotificationListener"
+            android:label="Tự động né icon thông báo"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".service.BootReceiver"
             android:enabled="true"

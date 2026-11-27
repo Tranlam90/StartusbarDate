@@ -15,7 +15,10 @@ data class OverlayConfig(
     val textSizeSp: Float = 13f,
     val colorMode: TextColorMode = TextColorMode.AUTO,
     val autoDetectLightApps: Boolean = true,
-    val lightAppPackages: Set<String> = PrefsManager.DEFAULT_LIGHT_APPS
+    val lightAppPackages: Set<String> = PrefsManager.DEFAULT_LIGHT_APPS,
+    val autoDodgeNotifications: Boolean = true,
+    val iconStepPx: Int = 56,
+    val maxDodgeIcons: Int = 4
 )
 
 class PrefsManager(context: Context) {
@@ -35,7 +38,10 @@ class PrefsManager(context: Context) {
             textSizeSp = prefs.getFloat(KEY_TEXT_SIZE, 13f),
             colorMode = TextColorMode.fromName(prefs.getString(KEY_COLOR_MODE, null)),
             autoDetectLightApps = prefs.getBoolean(KEY_AUTO_LIGHT_APPS, true),
-            lightAppPackages = savedPackages.toSet()
+            lightAppPackages = savedPackages.toSet(),
+            autoDodgeNotifications = prefs.getBoolean(KEY_AUTO_DODGE_NOTIF, true),
+            iconStepPx = prefs.getInt(KEY_ICON_STEP_PX, 56),
+            maxDodgeIcons = prefs.getInt(KEY_MAX_DODGE_ICONS, 4)
         )
     }
 
@@ -74,6 +80,21 @@ class PrefsManager(context: Context) {
         _config.update { it.copy(autoDetectLightApps = enabled) }
     }
 
+    fun setAutoDodgeNotifications(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTO_DODGE_NOTIF, enabled).apply()
+        _config.update { it.copy(autoDodgeNotifications = enabled) }
+    }
+
+    fun setIconStepPx(stepPx: Int) {
+        prefs.edit().putInt(KEY_ICON_STEP_PX, stepPx).apply()
+        _config.update { it.copy(iconStepPx = stepPx) }
+    }
+
+    fun setMaxDodgeIcons(maxIcons: Int) {
+        prefs.edit().putInt(KEY_MAX_DODGE_ICONS, maxIcons).apply()
+        _config.update { it.copy(maxDodgeIcons = maxIcons) }
+    }
+
     fun toggleLightAppPackage(packageName: String) {
         val current = _config.value.lightAppPackages.toMutableSet()
         if (!current.add(packageName)) {
@@ -98,6 +119,9 @@ class PrefsManager(context: Context) {
         private const val KEY_COLOR_MODE = "color_mode"
         private const val KEY_AUTO_LIGHT_APPS = "auto_light_apps"
         private const val KEY_LIGHT_APPS = "light_app_packages"
+        private const val KEY_AUTO_DODGE_NOTIF = "auto_dodge_notif"
+        private const val KEY_ICON_STEP_PX = "icon_step_px"
+        private const val KEY_MAX_DODGE_ICONS = "max_dodge_icons"
 
         val DEFAULT_LIGHT_APPS: Set<String> = setOf(
             "com.facebook.katana",

@@ -38,6 +38,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.time.Duration
 import java.time.ZonedDateTime
@@ -55,7 +56,7 @@ class DateOverlayService : Service() {
     private var lastAppliedWhiteText: Boolean? = null
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var configJob: Job? = null
+    private var stateJob: Job? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -123,17 +124,23 @@ class DateOverlayService : Service() {
             return
         }
 
+        if (PermissionHelper.hasNotificationListenerPermission(this)) {
+            StatusBarNotificationListener.requestRebindIfNeeded(this)
+        }
+
         setupOverlayView()
         registerSystemReceivers()
         scheduleNextMidnightRefresh()
 
-        configJob = serviceScope.launch {
-            prefsManager.config.collect { config ->
+        stateJob = serviceScope.launch {
+            combine(prefsManager.config, NotificationTracker.state) { config, notifState ->
+                Pair(config, notifState)
+            }.collect { (config, notifState) ->
                 if (!config.isEnabled) {
                     stopSelf()
                 } else {
                     lastAppliedWhiteText = null
-                    updateOverlayAppearance(config)
+                    updateOverlayAppearance(config, notifState)
                     restartForegroundPollingIfNeeded()
                 }
             }
@@ -145,6 +152,9 @@ class DateOverlayService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (PermissionHelper.hasNotificationListenerPermission(this)) {
+            StatusBarNotificationListener.requestRebindIfNeeded(this)
+        }
         refreshDateText()
         restartForegroundPollingIfNeeded()
         return START_STICKY
@@ -154,12 +164,15 @@ class DateOverlayService : Service() {
         if (dateTextView != null) return
 
         val config = prefsManager.config.value
+        val notifState = NotificationTracker.state.value
         val textView = TextView(this).apply {
             typeface = config.fontStyle.toAndroidTypeface()
             fontFeatureSettings = "tnum"
             includeFontPadding = false
             setSingleLine(true)
         }
+
+        val effectiveX = computeEffectiveX(config, notifState)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -172,7 +185,7 @@ class DateOverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = config.offsetX
+            x = effectiveX
             y = config.offsetY
             layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -181,10 +194,25 @@ class DateOverlayService : Service() {
         dateTextView = textView
         layoutParams = params
         windowManager.addView(textView, params)
-        updateOverlayAppearance(config)
+        updateOverlayAppearance(config, notifState)
     }
 
-    private fun updateOverlayAppearance(config: OverlayConfig) {
+    private fun computeEffectiveX(
+        config: OverlayConfig,
+        notifState: StatusBarNotificationState
+    ): Int {
+        val dodgedIcons = if (config.autoDodgeNotifications && notifState.isConnected) {
+            notifState.visibleIconCount.coerceIn(0, config.maxDodgeIcons)
+        } else {
+            0
+        }
+        return config.offsetX + (dodgedIcons * config.iconStepPx)
+    }
+
+    private fun updateOverlayAppearance(
+        config: OverlayConfig,
+        notifState: StatusBarNotificationState
+    ) {
         val tv = dateTextView ?: return
         val params = layoutParams ?: return
 
@@ -193,8 +221,9 @@ class DateOverlayService : Service() {
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, config.textSizeSp)
         applyTextColor(config)
 
-        if (params.x != config.offsetX || params.y != config.offsetY) {
-            params.x = config.offsetX
+        val targetX = computeEffectiveX(config, notifState)
+        if (params.x != targetX || params.y != config.offsetY) {
+            params.x = targetX
             params.y = config.offsetY
             try {
                 windowManager.updateViewLayout(tv, params)
@@ -221,7 +250,7 @@ class DateOverlayService : Service() {
                     fgPkg != null &&
                     config.lightAppPackages.contains(fgPkg)
                 ) {
-                    false // Nền app sáng -> dùng chữ đen
+                    false
                 } else {
                     isSystemNight
                 }
@@ -328,7 +357,7 @@ class DateOverlayService : Service() {
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("Đang hiển thị ngày/tháng")
-            .setContentText("Chạm để điều chỉnh vị trí, font hoặc màu chữ")
+            .setContentText("Chạm để điều chỉnh vị trí, font hoặc né icon")
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setOngoing(true)
@@ -350,7 +379,7 @@ class DateOverlayService : Service() {
     override fun onDestroy() {
         mainHandler.removeCallbacks(midnightRunnable)
         mainHandler.removeCallbacks(foregroundPollRunnable)
-        configJob?.cancel()
+        stateJob?.cancel()
         serviceScope.cancel()
         try {
             unregisterReceiver(systemEventReceiver)
