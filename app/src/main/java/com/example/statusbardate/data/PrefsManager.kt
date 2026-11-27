@@ -11,6 +11,10 @@ data class OverlayConfig(
     val formatOption: DateFormatOption = DateFormatOption.DD_MM,
     val fontStyle: FontStyleOption = FontStyleOption.OPPO_SANS,
     val fontWeight: Int = 550,
+    val selectedOemFontId: String? = null,
+    val customFontPath: String? = null,
+    val autoMatchClock: Boolean = true,
+    val verticalNudgePx: Int = 0,
     val offsetX: Int = PrefsManager.DEFAULT_OFFSET_X,
     val offsetY: Int = PrefsManager.DEFAULT_OFFSET_Y,
     val textSizeSp: Float = PrefsManager.DEFAULT_TEXT_SIZE_SP,
@@ -31,7 +35,6 @@ class PrefsManager(context: Context) {
     private fun loadConfig(): OverlayConfig {
         val savedPackages = prefs.getStringSet(KEY_LIGHT_APPS, null) ?: DEFAULT_LIGHT_APPS
 
-        // Tự động nâng cấp giá trị mặc định cũ (165px hay đè số cuối của đồng hồ, 56px hơi hẹp trên màn 1080p)
         var loadedOffsetX = prefs.getInt(KEY_OFFSET_X, DEFAULT_OFFSET_X)
         if (loadedOffsetX == 165) {
             loadedOffsetX = DEFAULT_OFFSET_X
@@ -49,6 +52,10 @@ class PrefsManager(context: Context) {
             formatOption = DateFormatOption.fromName(prefs.getString(KEY_FORMAT, null)),
             fontStyle = FontStyleOption.fromName(prefs.getString(KEY_FONT_STYLE, null)),
             fontWeight = prefs.getInt(KEY_FONT_WEIGHT, 550),
+            selectedOemFontId = prefs.getString(KEY_OEM_FONT_ID, null),
+            customFontPath = prefs.getString(KEY_CUSTOM_FONT_PATH, null),
+            autoMatchClock = prefs.getBoolean(KEY_AUTO_MATCH_CLOCK, true),
+            verticalNudgePx = prefs.getInt(KEY_VERTICAL_NUDGE_PX, 0),
             offsetX = loadedOffsetX,
             offsetY = prefs.getInt(KEY_OFFSET_Y, DEFAULT_OFFSET_Y),
             textSizeSp = prefs.getFloat(KEY_TEXT_SIZE, DEFAULT_TEXT_SIZE_SP),
@@ -82,9 +89,35 @@ class PrefsManager(context: Context) {
         _config.update { it.copy(fontWeight = clamped) }
     }
 
+    fun setSelectedOemFontId(id: String?) {
+        prefs.edit().putString(KEY_OEM_FONT_ID, id).apply()
+        _config.update { it.copy(selectedOemFontId = id, fontStyle = FontStyleOption.OPPO_SANS) }
+    }
+
+    fun setCustomFontPath(path: String?) {
+        prefs.edit().putString(KEY_CUSTOM_FONT_PATH, path).apply()
+        _config.update { it.copy(customFontPath = path, fontStyle = FontStyleOption.CUSTOM_FILE) }
+    }
+
+    fun setAutoMatchClock(autoMatch: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTO_MATCH_CLOCK, autoMatch).apply()
+        _config.update { it.copy(autoMatchClock = autoMatch) }
+    }
+
+    fun setVerticalNudgePx(nudgePx: Int) {
+        val clamped = nudgePx.coerceIn(-20, 20)
+        prefs.edit().putInt(KEY_VERTICAL_NUDGE_PX, clamped).apply()
+        _config.update { it.copy(verticalNudgePx = clamped) }
+    }
+
     fun setOffset(x: Int, y: Int) {
         prefs.edit().putInt(KEY_OFFSET_X, x).putInt(KEY_OFFSET_Y, y).apply()
         _config.update { it.copy(offsetX = x, offsetY = y) }
+    }
+
+    fun setOffsetX(x: Int) {
+        prefs.edit().putInt(KEY_OFFSET_X, x).apply()
+        _config.update { it.copy(offsetX = x) }
     }
 
     fun setTextSize(sp: Float) {
@@ -133,14 +166,18 @@ class PrefsManager(context: Context) {
 
     companion object {
         const val DEFAULT_OFFSET_X = 186
-        const val DEFAULT_OFFSET_Y = 13
-        const val DEFAULT_TEXT_SIZE_SP = 13.8f
+        const val DEFAULT_OFFSET_Y = 14
+        const val DEFAULT_TEXT_SIZE_SP = 14f
         const val DEFAULT_ICON_STEP_PX = 68
 
         private const val KEY_ENABLED = "enabled"
         private const val KEY_FORMAT = "format"
         private const val KEY_FONT_STYLE = "font_style"
         private const val KEY_FONT_WEIGHT = "font_weight"
+        private const val KEY_OEM_FONT_ID = "oem_font_id"
+        private const val KEY_CUSTOM_FONT_PATH = "custom_font_path"
+        private const val KEY_AUTO_MATCH_CLOCK = "auto_match_clock"
+        private const val KEY_VERTICAL_NUDGE_PX = "vertical_nudge_px"
         private const val KEY_OFFSET_X = "offset_x"
         private const val KEY_OFFSET_Y = "offset_y"
         private const val KEY_TEXT_SIZE = "text_size"

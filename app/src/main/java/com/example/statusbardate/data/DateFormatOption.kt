@@ -1,9 +1,14 @@
 package com.example.statusbardate.data
 
+import android.content.Context
 import android.graphics.Typeface
+import android.net.Uri
+import android.util.Xml
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import org.xmlpull.v1.XmlPullParser
 import java.io.File
+import java.io.FileOutputStream
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
@@ -37,85 +42,261 @@ enum class TextColorMode(val label: String) {
 
 object OemFontResolver {
     data class ResolvedFont(
+        val id: String,
         val typeface: Typeface,
-        val sourceName: String
+        val sourceName: String,
+        val priority: Int
     )
 
-    private val cachedResolved: ResolvedFont by lazy {
-        val fontDirs = listOf("/system/fonts", "/system_ext/fonts", "/product/fonts")
-        val priorityTokens = listOf("oplussans", "opposans", "sysfont", "oneplussans")
-        val excludedTokens = listOf("italic", "condensed", "emoji", "arabic", "cjk", "sc", "tc", "jp", "kr")
+    private val cachedCandidates: List<ResolvedFont> by lazy {
+        discoverSystemFonts()
+    }
 
-        val foundFiles = mutableListOf<File>()
-        for (dirPath in fontDirs) {
-            val dir = File(dirPath)
-            if (dir.exists() && dir.isDirectory && dir.canRead()) {
-                dir.listFiles()?.forEach { file ->
-                    val lower = file.name.lowercase()
-                    if ((lower.endsWith(".ttf") || lower.endsWith(".otf")) &&
-                        priorityTokens.any { lower.contains(it) } &&
-                        excludedTokens.none { lower.contains(it) }
-                    ) {
-                        foundFiles.add(file)
+    private fun discoverSystemFonts(): List<ResolvedFont> {
+        val candidatePaths = LinkedHashSet<String>()
+
+        // 1. Font tùy biến nếu người dùng đổi font trong OPPO Theme Store
+        val themePaths = listOf(
+            "/data/system/theme/fonts/Roboto-Medium.ttf",
+            "/data/system/theme/fonts/Roboto-Regular.ttf",
+            "/data/format_unclear/theme/fonts/Roboto-Regular.ttf"
+        )
+        candidatePaths.addAll(themePaths)
+
+        // 2. Đọc trực tiếp file cấu hình XML font hệ thống (không bị SELinux chặn listFiles)
+        val xmlConfigs = listOf(
+            "/system_ext/etc/fonts_base.xml",
+            "/product/etc/fonts_customization.xml",
+            "/system/etc/fonts.xml",
+            "/system/etc/fonts_fallback.xml",
+            "/odm/etc/fonts_customization.xml"
+        )
+        val fontDirs = listOf(
+            "/system/fonts/",
+            "/system_ext/fonts/",
+            "/product/fonts/",
+            "/odm/fonts/"
+        )
+
+        for (xmlPath in xmlConfigs) {
+            val fileNames = parseFontFilenamesFromXml(xmlPath)
+            for (fn in fileNames) {
+                if (fn.startsWith("/")) {
+                    candidatePaths.add(fn)
+                } else {
+                    for (dir in fontDirs) {
+                        candidatePaths.add(dir + fn)
                     }
                 }
             }
         }
 
-        // Ưu tiên bản Medium hoặc Variable Font (VF / 3.0 / 4.0)
-        val sortedFiles = foundFiles.sortedBy { file ->
-            val lower = file.name.lowercase()
-            when {
-                lower.contains("medium") -> 0
-                lower.contains("vf") || lower.contains("4.0") || lower.contains("3.0") -> 1
-                lower.contains("regular") -> 2
-                else -> 3
+        // 3. Danh sách đường dẫn trực tiếp các file font OPPO / ColorOS / OplusSans / SysFont
+        val explicitNames = listOf(
+            "OplusSans4.0_Medium.ttf",
+            "OplusSans4.0_Regular.ttf",
+            "OplusSans4.0.ttf",
+            "OplusSans3.0_Medium.ttf",
+            "OplusSans3.0_Regular.ttf",
+            "OplusSans3.0.ttf",
+            "OplusSans-Medium.ttf",
+            "OplusSans-Regular.ttf",
+            "OPPOSans4.0.ttf",
+            "OPPOSans3.0.ttf",
+            "OPPOSans-Medium.ttf",
+            "OPPOSans-Regular.ttf",
+            "OPPOSans-VF.ttf",
+            "SysFont-Static-Medium.ttf",
+            "SysFont-Static-Regular.ttf",
+            "SysFont-Medium.ttf",
+            "SysFont-Regular.ttf",
+            "SysFont-VF.ttf",
+            "OnePlusSans-Medium.ttf",
+            "OnePlusSans-Regular.ttf"
+        )
+        for (dir in fontDirs) {
+            for (name in explicitNames) {
+                candidatePaths.add(dir + name)
             }
         }
 
-        for (file in sortedFiles) {
-            if (file.canRead()) {
-                val tf = runCatching { Typeface.createFromFile(file) }.getOrNull()
-                if (tf != null) {
-                    return@lazy ResolvedFont(tf, file.name)
+        val excludedTokens = listOf(
+            "italic", "condensed", "mono", "serif", "emoji",
+            "arabic", "hebrew", "thai", "myanmar", "khmer", "lao",
+            "devanagari", "bengali", "tamil", "telugu", "kannada",
+            "malayalam", "gujarati", "gurmukhi", "oriya", "sinhala",
+            "cjk", "sc", "tc", "jp", "kr", "hk", "hans", "hant"
+        )
+
+        val results = mutableListOf<ResolvedFont>()
+        val seenFileNames = HashSet<String>()
+
+        for (path in candidatePaths) {
+            val file = File(path)
+            if (!file.exists() || !file.isFile || !file.canRead()) continue
+
+            val name = file.name
+            val lower = name.lowercase()
+            if (!lower.endsWith(".ttf") && !lower.endsWith(".otf")) continue
+            if (excludedTokens.any { lower.contains(it) }) continue
+
+            val isOem = lower.contains("oplus") ||
+                lower.contains("oppo") ||
+                lower.contains("sysfont") ||
+                lower.contains("oneplus") ||
+                path.contains("/theme/fonts/")
+
+            if (!isOem) continue
+            if (!seenFileNames.add(name)) continue
+
+            val tf = runCatching { Typeface.createFromFile(file) }.getOrNull() ?: continue
+            val priority = when {
+                path.contains("/theme/fonts/") -> 0
+                lower.contains("medium") -> 1
+                lower.contains("vf") || lower.contains("4.0") || lower.contains("3.0") -> 2
+                lower.contains("regular") -> 3
+                else -> 4
+            }
+            results.add(
+                ResolvedFont(
+                    id = path,
+                    typeface = tf,
+                    sourceName = name,
+                    priority = priority
+                )
+            )
+        }
+
+        // Thử thêm tên family nội bộ của ColorOS nếu chưa thấy file trực tiếp
+        val oemFamilies = listOf("oplus-sans", "oppo-sans", "sys-sans-en", "oneplus-sans")
+        for (fam in oemFamilies) {
+            val tf = runCatching { Typeface.create(fam, Typeface.NORMAL) }.getOrNull()
+            if (tf != null && tf != Typeface.DEFAULT && tf != Typeface.SANS_SERIF) {
+                results.add(
+                    ResolvedFont(
+                        id = "family:$fam",
+                        typeface = tf,
+                        sourceName = fam,
+                        priority = 5
+                    )
+                )
+            }
+        }
+
+        if (results.isEmpty()) {
+            results.add(
+                ResolvedFont(
+                    id = "sans-serif-medium",
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL),
+                    sourceName = "sans-serif-medium",
+                    priority = 10
+                )
+            )
+        }
+
+        return results.sortedWith(compareBy<ResolvedFont> { it.priority }.thenBy { it.sourceName })
+    }
+
+    private fun parseFontFilenamesFromXml(xmlPath: String): List<String> {
+        val file = File(xmlPath)
+        if (!file.exists() || !file.canRead()) return emptyList()
+        val names = mutableListOf<String>()
+        runCatching {
+            file.inputStream().use { input ->
+                val parser = Xml.newPullParser()
+                parser.setInput(input, "UTF-8")
+                var eventType = parser.eventType
+                var insideFontTag = false
+                while (eventType != XmlPullParser.END_DOCUMENT) {
+                    when (eventType) {
+                        XmlPullParser.START_TAG -> {
+                            if (parser.name == "font") {
+                                insideFontTag = true
+                            }
+                        }
+                        XmlPullParser.TEXT -> {
+                            if (insideFontTag) {
+                                val text = parser.text?.trim().orEmpty()
+                                if (text.endsWith(".ttf", ignoreCase = true) ||
+                                    text.endsWith(".otf", ignoreCase = true)
+                                ) {
+                                    names.add(text)
+                                }
+                            }
+                        }
+                        XmlPullParser.END_TAG -> {
+                            if (parser.name == "font") {
+                                insideFontTag = false
+                            }
+                        }
+                    }
+                    eventType = parser.next()
                 }
             }
         }
-
-        val familyNames = listOf(
-            "oplus-sans",
-            "oppo-sans",
-            "sys-sans-en",
-            "sans-serif-medium"
-        )
-        for (family in familyNames) {
-            val tf = runCatching { Typeface.create(family, Typeface.NORMAL) }.getOrNull()
-            if (tf != null && tf != Typeface.DEFAULT) {
-                return@lazy ResolvedFont(tf, family)
-            }
-        }
-
-        ResolvedFont(Typeface.create("sans-serif-medium", Typeface.NORMAL), "sans-serif-medium")
+        return names
     }
 
-    fun resolveOppoOrSystem(): ResolvedFont = cachedResolved
+    fun getAllCandidates(): List<ResolvedFont> = cachedCandidates
+
+    fun resolveById(selectedId: String?): ResolvedFont {
+        if (!selectedId.isNullOrBlank()) {
+            cachedCandidates.find { it.id == selectedId }?.let { return it }
+        }
+        return cachedCandidates.first()
+    }
+
+    fun loadCustomFontFromUri(context: Context, uri: Uri): String? {
+        return runCatching {
+            val outFile = File(context.filesDir, "custom_status_bar_font.ttf")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(outFile).use { output ->
+                    input.copyTo(output)
+                }
+            } ?: return null
+            val tf = Typeface.createFromFile(outFile) ?: return null
+            if (tf == Typeface.DEFAULT) return null
+            outFile.absolutePath
+        }.getOrNull()
+    }
+
+    fun loadCustomFontFile(path: String?): Typeface? {
+        if (path.isNullOrBlank()) return null
+        val file = File(path)
+        if (!file.exists() || !file.canRead()) return null
+        return runCatching { Typeface.createFromFile(file) }.getOrNull()
+    }
 }
 
 enum class FontStyleOption(val label: String) {
     OPPO_SANS("OPPO / ColorOS (Khớp giờ)"),
-    SYSTEM_MEDIUM("Chuẩn thanh trạng thái (Medium)"),
+    CUSTOM_FILE("File font (.ttf) tự chọn"),
+    SYSTEM_MEDIUM("Chuẩn Android (Medium)"),
     SYSTEM_REGULAR("Hệ thống (Thường)"),
     SYSTEM_SEMIBOLD("Hệ thống (Đậm)"),
     SANS_LIGHT("Nét mảnh (Light)"),
     SANS_CONDENSED("Chữ gọn (Condensed)"),
     MONOSPACE("Số đều (Monospace)");
 
-    fun toAndroidTypeface(weight: Int = 550): Typeface {
+    fun toAndroidTypeface(
+        weight: Int = 550,
+        selectedOemFontId: String? = null,
+        customFontPath: String? = null
+    ): Typeface {
         val clampedWeight = weight.coerceIn(300, 700)
         return when (this) {
             OPPO_SANS -> {
-                val base = OemFontResolver.resolveOppoOrSystem().typeface
+                val base = OemFontResolver.resolveById(selectedOemFontId).typeface
                 Typeface.create(base, clampedWeight, false)
+            }
+            CUSTOM_FILE -> {
+                val custom = OemFontResolver.loadCustomFontFile(customFontPath)
+                if (custom != null) {
+                    Typeface.create(custom, clampedWeight, false)
+                } else {
+                    val base = OemFontResolver.resolveById(selectedOemFontId).typeface
+                    Typeface.create(base, clampedWeight, false)
+                }
             }
             SYSTEM_MEDIUM -> Typeface.create("sans-serif-medium", Typeface.NORMAL)
             SYSTEM_REGULAR -> Typeface.create("sans-serif", Typeface.NORMAL)
@@ -126,16 +307,23 @@ enum class FontStyleOption(val label: String) {
         }
     }
 
-    fun toComposeFontFamily(): FontFamily {
+    fun toComposeFontFamily(
+        selectedOemFontId: String? = null,
+        customFontPath: String? = null
+    ): FontFamily {
         return when (this) {
             MONOSPACE -> FontFamily.Monospace
+            OPPO_SANS, CUSTOM_FILE -> {
+                val tf = toAndroidTypeface(550, selectedOemFontId, customFontPath)
+                FontFamily(tf)
+            }
             else -> FontFamily.Default
         }
     }
 
     fun toComposeFontWeight(weight: Int = 550): FontWeight {
         return when (this) {
-            OPPO_SANS -> FontWeight(weight.coerceIn(300, 700))
+            OPPO_SANS, CUSTOM_FILE -> FontWeight(weight.coerceIn(300, 700))
             SYSTEM_REGULAR, SANS_CONDENSED -> FontWeight.Normal
             SYSTEM_MEDIUM -> FontWeight.Medium
             SYSTEM_SEMIBOLD -> FontWeight.SemiBold

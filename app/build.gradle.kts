@@ -12,8 +12,8 @@ android {
         applicationId = "com.example.statusbardate"
         minSdk = 29
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.3.1"
+        versionCode = 9
+        versionName = "1.4.0"
     }
 
     buildTypes {

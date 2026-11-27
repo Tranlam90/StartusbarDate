@@ -1,6 +1,7 @@
 package com.example.statusbardate.ui
 
 import android.Manifest
+import android.widget.Toast
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -81,6 +82,7 @@ import com.example.statusbardate.service.NotificationTracker
 import com.example.statusbardate.service.StatusBarNotificationListener
 import com.example.statusbardate.util.InstalledAppInfo
 import com.example.statusbardate.util.PermissionHelper
+import com.example.statusbardate.util.SystemStatusBarMetrics
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -94,6 +96,7 @@ fun MainScreen() {
     val prefsManager = remember { PrefsManager.getInstance(context) }
     val config by prefsManager.config.collectAsState()
     val notifState by NotificationTracker.state.collectAsState()
+    val clockMetrics = remember { SystemStatusBarMetrics.measure(context) }
 
     var hasOverlayPerm by remember { mutableStateOf(PermissionHelper.canDrawOverlays(context)) }
     var hasNotifPerm by remember { mutableStateOf(PermissionHelper.hasNotificationPermission(context)) }
@@ -113,6 +116,20 @@ fun MainScreen() {
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         hasNotifPerm = granted
+    }
+
+    val fontPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val savedPath = OemFontResolver.loadCustomFontFromUri(context, uri)
+            if (savedPath != null) {
+                prefsManager.setCustomFontPath(savedPath)
+                Toast.makeText(context, "Đã nạp font tùy chỉnh thành công", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Không đọc được file font này", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     DisposableEffect(lifecycleOwner) {
@@ -253,8 +270,8 @@ fun MainScreen() {
                         dateText = formattedDate,
                         bgColor = Color(0xFF141414),
                         fgColor = Color.White,
-                        fontSizeSp = config.textSizeSp,
-                        fontFamily = config.fontStyle.toComposeFontFamily(),
+                        fontSizeSp = if (config.autoMatchClock) clockMetrics.clockTextSizeSp else config.textSizeSp,
+                        fontFamily = config.fontStyle.toComposeFontFamily(config.selectedOemFontId, config.customFontPath),
                         fontWeight = config.fontStyle.toComposeFontWeight(config.fontWeight)
                     )
                     StatusBarPreviewRow(
@@ -262,8 +279,8 @@ fun MainScreen() {
                         dateText = formattedDate,
                         bgColor = Color(0xFFF2F2F2),
                         fgColor = Color(0xFF1C1B1F),
-                        fontSizeSp = config.textSizeSp,
-                        fontFamily = config.fontStyle.toComposeFontFamily(),
+                        fontSizeSp = if (config.autoMatchClock) clockMetrics.clockTextSizeSp else config.textSizeSp,
+                        fontFamily = config.fontStyle.toComposeFontFamily(config.selectedOemFontId, config.customFontPath),
                         fontWeight = config.fontStyle.toComposeFontWeight(config.fontWeight)
                     )
                 }
@@ -397,13 +414,35 @@ fun MainScreen() {
                         }
                     }
 
-                    if (config.fontStyle == FontStyleOption.OPPO_SANS) {
-                        val detectedFont = remember { OemFontResolver.resolveOppoOrSystem().sourceName }
+                    if (config.fontStyle == FontStyleOption.OPPO_SANS ||
+                        config.fontStyle == FontStyleOption.CUSTOM_FILE
+                    ) {
+                        val oemCandidates = remember { OemFontResolver.getAllCandidates() }
+                        val activeOem = remember(config.selectedOemFontId) {
+                            OemFontResolver.resolveById(config.selectedOemFontId)
+                        }
                         Text(
-                            text = "Font hệ thống nhận diện: $detectedFont • Độ đậm: ${config.fontWeight}",
+                            text = if (config.fontStyle == FontStyleOption.CUSTOM_FILE && config.customFontPath != null) {
+                                "Đang dùng file font riêng • Độ đậm: ${config.fontWeight}"
+                            } else {
+                                "Font hệ thống đang nạp: ${activeOem.sourceName} • Độ đậm: ${config.fontWeight}"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+
+                        if (config.fontStyle == FontStyleOption.OPPO_SANS && oemCandidates.size > 1) {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                oemCandidates.take(6).forEach { cand ->
+                                    FilterChip(
+                                        selected = activeOem.id == cand.id,
+                                        onClick = { prefsManager.setSelectedOemFontId(cand.id) },
+                                        label = { Text(cand.sourceName) }
+                                    )
+                                }
+                            }
+                        }
+
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = { prefsManager.setFontWeight(450) }) {
                                 Text("Mảnh (450)")
@@ -423,6 +462,13 @@ fun MainScreen() {
                             },
                             valueRange = 300f..700f
                         )
+                    }
+
+                    OutlinedButton(
+                        onClick = { fontPickerLauncher.launch(arrayOf("*/*")) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Chọn file font (.ttf / .otf) từ bộ nhớ máy")
                     }
                 }
             }
@@ -501,50 +547,92 @@ fun MainScreen() {
                 }
             }
 
-            // 6. Căn chỉnh vị trí gốc & Cỡ chữ
+            // 6. Tự khớp ngang hàng & kích cỡ với đồng hồ hệ thống
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(
-                        text = "Vị trí gốc (khi chưa có thông báo) & Cỡ chữ",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Tự ngang hàng & bằng cỡ chữ đồng hồ",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Tự căn giữa thanh trạng thái (${clockMetrics.statusBarHeightPx} px) • Cỡ chữ ${clockMetrics.clockTextSizeSp} sp (${clockMetrics.sourceLabel})",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = config.autoMatchClock,
+                            onCheckedChange = { prefsManager.setAutoMatchClock(it) }
+                        )
+                    }
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { prefsManager.setOffset(PrefsManager.DEFAULT_OFFSET_X, PrefsManager.DEFAULT_OFFSET_Y) }) {
-                            Text("Góc trái (cạnh giờ)")
+                        OutlinedButton(onClick = {
+                            prefsManager.setAutoMatchClock(true)
+                            prefsManager.setVerticalNudgePx(0)
+                            prefsManager.setOffsetX(clockMetrics.recommendedOffsetX)
+                        }) {
+                            Text("Cạnh giờ (Tự động)")
                         }
-                        OutlinedButton(onClick = { prefsManager.setOffset(480, PrefsManager.DEFAULT_OFFSET_Y) }) {
+                        OutlinedButton(onClick = {
+                            prefsManager.setAutoMatchClock(true)
+                            prefsManager.setVerticalNudgePx(0)
+                            prefsManager.setOffsetX(480)
+                        }) {
                             Text("Giữa màn hình")
                         }
                     }
 
-                    Text("Vị trí ngang gốc (X): ${config.offsetX} px", style = MaterialTheme.typography.bodySmall)
+                    Text("Khoảng cách ngang từ mép trái (X): ${config.offsetX} px", style = MaterialTheme.typography.bodySmall)
                     Slider(
                         value = config.offsetX.toFloat(),
-                        onValueChange = { prefsManager.setOffset(it.roundToInt(), config.offsetY) },
+                        onValueChange = { prefsManager.setOffsetX(it.roundToInt()) },
                         valueRange = 0f..900f
                     )
 
-                    Text("Vị trí dọc (Y): ${config.offsetY} px", style = MaterialTheme.typography.bodySmall)
-                    Slider(
-                        value = config.offsetY.toFloat(),
-                        onValueChange = { prefsManager.setOffset(config.offsetX, it.roundToInt()) },
-                        valueRange = -20f..140f
-                    )
+                    if (config.autoMatchClock) {
+                        if (config.verticalNudgePx != 0) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = "Vi chỉnh dọc: ${config.verticalNudgePx} px",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                TextButton(onClick = { prefsManager.setVerticalNudgePx(0) }) {
+                                    Text("Đặt lại 0 px")
+                                }
+                            }
+                        }
+                    } else {
+                        Text("Vị trí dọc thủ công (Y): ${config.offsetY} px", style = MaterialTheme.typography.bodySmall)
+                        Slider(
+                            value = config.offsetY.toFloat(),
+                            onValueChange = { prefsManager.setOffset(config.offsetX, it.roundToInt()) },
+                            valueRange = -20f..140f
+                        )
 
-                    Text(
-                        "Cỡ chữ: ${String.format(Locale.US, "%.1f", config.textSizeSp)} sp",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Slider(
-                        value = config.textSizeSp,
-                        onValueChange = { prefsManager.setTextSize(it) },
-                        valueRange = 10f..17f
-                    )
+                        Text(
+                            "Cỡ chữ thủ công: ${String.format(Locale.US, "%.1f", config.textSizeSp)} sp",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Slider(
+                            value = config.textSizeSp,
+                            onValueChange = { prefsManager.setTextSize(it) },
+                            valueRange = 10f..17f
+                        )
+                    }
                 }
             }
 
