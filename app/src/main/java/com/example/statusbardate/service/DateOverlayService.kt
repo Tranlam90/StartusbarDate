@@ -5,6 +5,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -13,11 +15,11 @@ import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
@@ -30,6 +32,7 @@ import com.example.statusbardate.R
 import com.example.statusbardate.data.OverlayConfig
 import com.example.statusbardate.data.PrefsManager
 import com.example.statusbardate.data.TextColorMode
+import com.example.statusbardate.util.PermissionHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -43,16 +46,41 @@ class DateOverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
     private lateinit var prefsManager: PrefsManager
+    private lateinit var usageStatsManager: UsageStatsManager
+    private lateinit var powerManager: PowerManager
+
     private var dateTextView: TextView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
+    private var currentForegroundPackage: String? = null
+    private var lastAppliedWhiteText: Boolean? = null
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var configJob: Job? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
     private val midnightRunnable = Runnable {
         refreshDateText()
         scheduleNextMidnightRefresh()
+    }
+
+    private val foregroundPollRunnable = object : Runnable {
+        override fun run() {
+            val config = prefsManager.config.value
+            if (config.isEnabled &&
+                config.colorMode == TextColorMode.AUTO &&
+                config.autoDetectLightApps &&
+                powerManager.isInteractive
+            ) {
+                detectForegroundPackage()?.let { pkg ->
+                    if (pkg != currentForegroundPackage) {
+                        currentForegroundPackage = pkg
+                        applyTextColor(config)
+                    }
+                }
+                mainHandler.postDelayed(this, POLL_INTERVAL_MS)
+            }
+        }
     }
 
     private val systemEventReceiver = object : BroadcastReceiver() {
@@ -65,7 +93,15 @@ class DateOverlayService : Service() {
                     scheduleNextMidnightRefresh()
                 }
                 Intent.ACTION_CONFIGURATION_CHANGED -> {
-                    applyTextColor(prefsManager.config.value.colorMode)
+                    lastAppliedWhiteText = null
+                    applyTextColor(prefsManager.config.value)
+                }
+                Intent.ACTION_SCREEN_ON,
+                Intent.ACTION_USER_PRESENT -> {
+                    restartForegroundPollingIfNeeded()
+                }
+                Intent.ACTION_SCREEN_OFF -> {
+                    mainHandler.removeCallbacks(foregroundPollRunnable)
                 }
             }
         }
@@ -74,6 +110,8 @@ class DateOverlayService : Service() {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        usageStatsManager = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
+        powerManager = getSystemService(POWER_SERVICE) as PowerManager
         prefsManager = PrefsManager.getInstance(this)
 
         createNotificationChannel()
@@ -94,7 +132,9 @@ class DateOverlayService : Service() {
                 if (!config.isEnabled) {
                     stopSelf()
                 } else {
+                    lastAppliedWhiteText = null
                     updateOverlayAppearance(config)
+                    restartForegroundPollingIfNeeded()
                 }
             }
         }
@@ -106,6 +146,7 @@ class DateOverlayService : Service() {
             return START_NOT_STICKY
         }
         refreshDateText()
+        restartForegroundPollingIfNeeded()
         return START_STICKY
     }
 
@@ -114,7 +155,8 @@ class DateOverlayService : Service() {
 
         val config = prefsManager.config.value
         val textView = TextView(this).apply {
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            typeface = config.fontStyle.toAndroidTypeface()
+            fontFeatureSettings = "tnum"
             includeFontPadding = false
             setSingleLine(true)
         }
@@ -147,8 +189,9 @@ class DateOverlayService : Service() {
         val params = layoutParams ?: return
 
         tv.text = config.formatOption.format()
+        tv.typeface = config.fontStyle.toAndroidTypeface()
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, config.textSizeSp)
-        applyTextColor(config.colorMode)
+        applyTextColor(config)
 
         if (params.x != config.offsetX || params.y != config.offsetY) {
             params.x = config.offsetX
@@ -164,23 +207,72 @@ class DateOverlayService : Service() {
         dateTextView?.text = prefsManager.config.value.formatOption.format()
     }
 
-    private fun applyTextColor(mode: TextColorMode) {
+    private fun applyTextColor(config: OverlayConfig) {
         val tv = dateTextView ?: return
-        val isNight = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+        val isSystemNight = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
 
-        val useWhiteText = when (mode) {
-            TextColorMode.AUTO -> isNight
+        val useWhiteText = when (config.colorMode) {
             TextColorMode.WHITE -> true
             TextColorMode.BLACK -> false
+            TextColorMode.AUTO -> {
+                val fgPkg = currentForegroundPackage
+                if (config.autoDetectLightApps &&
+                    fgPkg != null &&
+                    config.lightAppPackages.contains(fgPkg)
+                ) {
+                    false // Nền app sáng -> dùng chữ đen
+                } else {
+                    isSystemNight
+                }
+            }
         }
+
+        if (lastAppliedWhiteText == useWhiteText) return
+        lastAppliedWhiteText = useWhiteText
 
         if (useWhiteText) {
             tv.setTextColor(Color.WHITE)
-            tv.setShadowLayer(2.5f, 0f, 1f, Color.argb(140, 0, 0, 0))
+            tv.setShadowLayer(2.2f, 0f, 1f, Color.argb(135, 0, 0, 0))
         } else {
             tv.setTextColor(Color.parseColor("#1C1B1F"))
-            tv.setShadowLayer(2.0f, 0f, 1f, Color.argb(110, 255, 255, 255))
+            tv.setShadowLayer(1.8f, 0f, 1f, Color.argb(105, 255, 255, 255))
+        }
+    }
+
+    private fun restartForegroundPollingIfNeeded() {
+        mainHandler.removeCallbacks(foregroundPollRunnable)
+        val config = prefsManager.config.value
+        if (config.isEnabled &&
+            config.colorMode == TextColorMode.AUTO &&
+            config.autoDetectLightApps &&
+            PermissionHelper.hasUsageStatsPermission(this) &&
+            powerManager.isInteractive
+        ) {
+            mainHandler.post(foregroundPollRunnable)
+        } else {
+            currentForegroundPackage = null
+            applyTextColor(config)
+        }
+    }
+
+    private fun detectForegroundPackage(): String? {
+        if (!PermissionHelper.hasUsageStatsPermission(this)) return null
+        val endTime = System.currentTimeMillis()
+        val beginTime = endTime - 15_000L
+        return try {
+            val events = usageStatsManager.queryEvents(beginTime, endTime)
+            val event = UsageEvents.Event()
+            var latestPkg: String? = null
+            while (events.hasNextEvent()) {
+                events.getNextEvent(event)
+                if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+                    latestPkg = event.packageName
+                }
+            }
+            latestPkg
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -198,6 +290,9 @@ class DateOverlayService : Service() {
             addAction(Intent.ACTION_TIME_CHANGED)
             addAction(Intent.ACTION_TIMEZONE_CHANGED)
             addAction(Intent.ACTION_CONFIGURATION_CHANGED)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
         }
         ContextCompat.registerReceiver(
             this,
@@ -233,7 +328,7 @@ class DateOverlayService : Service() {
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("Đang hiển thị ngày/tháng")
-            .setContentText("Chạm để điều chỉnh vị trí hoặc định dạng")
+            .setContentText("Chạm để điều chỉnh vị trí, font hoặc màu chữ")
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setOngoing(true)
@@ -254,6 +349,7 @@ class DateOverlayService : Service() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacks(midnightRunnable)
+        mainHandler.removeCallbacks(foregroundPollRunnable)
         configJob?.cancel()
         serviceScope.cancel()
         try {
@@ -275,6 +371,7 @@ class DateOverlayService : Service() {
     companion object {
         private const val CHANNEL_ID = "status_bar_date_channel"
         private const val NOTIFICATION_ID = 1001
+        private const val POLL_INTERVAL_MS = 1_100L
 
         fun start(context: Context) {
             val intent = Intent(context, DateOverlayService::class.java)

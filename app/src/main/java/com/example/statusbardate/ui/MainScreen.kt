@@ -5,6 +5,7 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,31 +16,40 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.BatteryChargingFull
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.SignalCellularAlt
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -53,6 +63,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,9 +71,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.statusbardate.data.DateFormatOption
+import com.example.statusbardate.data.FontStyleOption
 import com.example.statusbardate.data.PrefsManager
 import com.example.statusbardate.data.TextColorMode
 import com.example.statusbardate.service.DateOverlayService
+import com.example.statusbardate.util.InstalledAppInfo
 import com.example.statusbardate.util.PermissionHelper
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
@@ -82,6 +95,11 @@ fun MainScreen() {
     var isBatteryIgnored by remember {
         mutableStateOf(PermissionHelper.isIgnoringBatteryOptimizations(context))
     }
+    var hasUsagePerm by remember {
+        mutableStateOf(PermissionHelper.hasUsageStatsPermission(context))
+    }
+
+    var showLightAppsDialog by remember { mutableStateOf(false) }
 
     val notificationLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -95,6 +113,7 @@ fun MainScreen() {
                 hasOverlayPerm = PermissionHelper.canDrawOverlays(context)
                 hasNotifPerm = PermissionHelper.hasNotificationPermission(context)
                 isBatteryIgnored = PermissionHelper.isIgnoringBatteryOptimizations(context)
+                hasUsagePerm = PermissionHelper.hasUsageStatsPermission(context)
 
                 if (config.isEnabled && hasOverlayPerm) {
                     DateOverlayService.start(context)
@@ -105,6 +124,15 @@ fun MainScreen() {
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    if (showLightAppsDialog) {
+        LightAppsPickerDialog(
+            selectedPackages = config.lightAppPackages,
+            onTogglePackage = { prefsManager.toggleLightAppPackage(it) },
+            onResetDefaults = { prefsManager.resetDefaultLightApps() },
+            onDismiss = { showLightAppsDialog = false }
+        )
     }
 
     Scaffold(
@@ -122,6 +150,7 @@ fun MainScreen() {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // 1. Công tắc chính
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.elevatedCardColors(
@@ -164,7 +193,7 @@ fun MainScreen() {
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Tự cập nhật khi sang ngày mới & đổi múi giờ",
+                                text = "Tự cập nhật ngày mới & đổi màu theo ứng dụng",
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
@@ -192,6 +221,7 @@ fun MainScreen() {
                 }
             }
 
+            // 2. Xem trước hiển thị
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -202,9 +232,7 @@ fun MainScreen() {
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
                     )
-                    val currentTime = remember {
-                        LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
-                    }
+                    val currentTime = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
                     val formattedDate = config.formatOption.format()
 
                     StatusBarPreviewRow(
@@ -212,18 +240,23 @@ fun MainScreen() {
                         dateText = formattedDate,
                         bgColor = Color(0xFF141414),
                         fgColor = Color.White,
-                        fontSizeSp = config.textSizeSp
+                        fontSizeSp = config.textSizeSp,
+                        fontFamily = config.fontStyle.toComposeFontFamily(),
+                        fontWeight = config.fontStyle.toComposeFontWeight()
                     )
                     StatusBarPreviewRow(
                         timeText = currentTime,
                         dateText = formattedDate,
                         bgColor = Color(0xFFF2F2F2),
                         fgColor = Color(0xFF1C1B1F),
-                        fontSizeSp = config.textSizeSp
+                        fontSizeSp = config.textSizeSp,
+                        fontFamily = config.fontStyle.toComposeFontFamily(),
+                        fontWeight = config.fontStyle.toComposeFontWeight()
                     )
                 }
             }
 
+            // 3. Định dạng ngày tháng & Kiểu font
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -245,6 +278,29 @@ fun MainScreen() {
                     }
 
                     Text(
+                        text = "Kiểu chữ (Font khớp với đồng hồ máy)",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FontStyleOption.entries.forEach { style ->
+                            FilterChip(
+                                selected = config.fontStyle == style,
+                                onClick = { prefsManager.setFontStyle(style) },
+                                label = { Text(style.label) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 4. Màu chữ & Tự động đổi màu theo ứng dụng
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
                         text = "Màu chữ hiển thị",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
@@ -258,9 +314,61 @@ fun MainScreen() {
                             )
                         }
                     }
+
+                    if (config.colorMode == TextColorMode.AUTO) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Tự đổi chữ đen khi mở app nền sáng",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = "Facebook, Zalo, Shopee, Gmail, Ngân hàng...",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            Switch(
+                                checked = config.autoDetectLightApps,
+                                onCheckedChange = { wantAuto ->
+                                    if (wantAuto && !hasUsagePerm) {
+                                        PermissionHelper.openUsageAccessSettings(context)
+                                    }
+                                    prefsManager.setAutoDetectLightApps(wantAuto)
+                                }
+                            )
+                        }
+
+                        if (config.autoDetectLightApps) {
+                            if (!hasUsagePerm) {
+                                Button(
+                                    onClick = { PermissionHelper.openUsageAccessSettings(context) },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Outlined.Visibility, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Cấp quyền nhận diện ứng dụng đang mở")
+                                }
+                            }
+
+                            OutlinedButton(
+                                onClick = { showLightAppsDialog = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Outlined.Apps, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Chọn ứng dụng nền sáng (${config.lightAppPackages.size} app)")
+                            }
+                        }
+                    }
                 }
             }
 
+            // 5. Căn chỉnh vị trí & Cỡ chữ
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -307,6 +415,7 @@ fun MainScreen() {
                 }
             }
 
+            // 6. Quyền hệ thống & Độ ổn định
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -325,8 +434,20 @@ fun MainScreen() {
                         Icon(Icons.Outlined.Layers, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (hasOverlayPerm) "Quyền hiển thị trên ứng dụng khác: Đã cấp"
+                            if (hasOverlayPerm) "1. Hiển thị trên ứng dụng khác: Đã cấp"
                             else "1. Cấp quyền hiển thị trên ứng dụng khác"
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = { PermissionHelper.openUsageAccessSettings(context) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Outlined.Visibility, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (hasUsagePerm) "2. Nhận diện app nền sáng: Đã cấp"
+                            else "2. Cấp quyền nhận diện app (đổi màu Facebook)"
                         )
                     }
 
@@ -337,8 +458,8 @@ fun MainScreen() {
                         Icon(Icons.Outlined.BatteryChargingFull, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (isBatteryIgnored) "Tối ưu hóa pin: Đã tắt (Ổn định)"
-                            else "2. Tắt tối ưu hóa pin (Tránh bị hệ thống đóng)"
+                            if (isBatteryIgnored) "3. Tối ưu hóa pin: Đã tắt (Ổn định)"
+                            else "3. Tắt tối ưu hóa pin (Tránh bị hệ thống đóng)"
                         )
                     }
                 }
@@ -348,12 +469,98 @@ fun MainScreen() {
 }
 
 @Composable
+private fun LightAppsPickerDialog(
+    selectedPackages: Set<String>,
+    onTogglePackage: (String) -> Unit,
+    onResetDefaults: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val installedApps = remember { PermissionHelper.getLaunchableApps(context) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    val filteredApps = remember(installedApps, searchQuery, selectedPackages) {
+        installedApps
+            .filter { app ->
+                searchQuery.isBlank() ||
+                    app.label.contains(searchQuery, ignoreCase = true) ||
+                    app.packageName.contains(searchQuery, ignoreCase = true)
+            }
+            .sortedWith(
+                compareByDescending<InstalledAppInfo> { selectedPackages.contains(it.packageName) }
+                    .thenBy { it.label.lowercase() }
+            )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Ứng dụng nền sáng (Chữ đen)") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("Tìm tên ứng dụng (vd: Facebook)...") }
+                )
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                ) {
+                    items(filteredApps, key = { it.packageName }) { app ->
+                        val checked = selectedPackages.contains(app.packageName)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onTogglePackage(app.packageName) }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = { onTogglePackage(app.packageName) }
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = app.label,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = app.packageName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Xong")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onResetDefaults) {
+                Text("Mặc định")
+            }
+        }
+    )
+}
+
+@Composable
 private fun StatusBarPreviewRow(
     timeText: String,
     dateText: String,
     bgColor: Color,
     fgColor: Color,
-    fontSizeSp: Float
+    fontSizeSp: Float,
+    fontFamily: FontFamily,
+    fontWeight: FontWeight
 ) {
     Box(
         modifier = Modifier
@@ -381,7 +588,8 @@ private fun StatusBarPreviewRow(
                     text = dateText,
                     color = fgColor,
                     fontSize = fontSizeSp.sp,
-                    fontWeight = FontWeight.Medium
+                    fontFamily = fontFamily,
+                    fontWeight = fontWeight
                 )
             }
             Row(
